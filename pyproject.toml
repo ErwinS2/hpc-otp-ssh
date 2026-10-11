@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hpc-otp-ssh"
+version = "0.1.0"
+description = "Password + TOTP (MFA) SSH automation for HPC clusters, with an agent-friendly JSON CLI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "hpc-otp-ssh contributors" }]
+keywords = ["hpc", "slurm", "scow", "ssh", "totp", "otp", "mfa", "automation", "agent", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "paramiko>=3.0",
+    "pyotp>=2.6",
+]
+
+[project.optional-dependencies]
+# 从二维码截图导入密钥时需要（opencv 的 QRCodeDetector）
+qr = ["opencv-python>=4.5"]
+dev = ["pytest>=7"]
+
+[project.urls]
+# TODO: 换成你的仓库地址
+Homepage = "https://github.com/your-name/hpc-otp-ssh"
+Issues = "https://github.com/your-name/hpc-otp-ssh/issues"
+
+[project.scripts]
+hpc-ssh = "hpc_otp_ssh.connector:main"
+hpc-otp = "hpc_otp_ssh.otp:main"
+
+[tool.setuptools]
+packages = ["hpc_otp_ssh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

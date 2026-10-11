@@ -1,0 +1,7 @@
+# 统一用 LF：本项目要把脚本上传到 Linux 集群执行，
+# 带 CRLF 会报 "/bin/bash^M: bad interpreter"。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

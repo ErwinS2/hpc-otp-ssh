@@ -1,0 +1,30 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- 凭据与密钥：绝对不要提交 ----
+cred.dat
+*.local.md
+MACHINE*.md
+
+# 本机专属的作业脚本（里面有真实 --account）
+/job.sh
+
+# 二维码截图 —— 里面就是明文 TOTP 密钥
+*.png
+*.jpg
+*.jpeg
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: 运行测试（全部离线，不连集群）
+        run: python -m pytest -q
+
+      # ubuntu job 顺便验证：非 Windows 上模块能正常 import 并给出清晰报错
+      - name: 检查非 Windows 下的导入行为
+        if: runner.os != 'Windows'
+        run: |
+          python -c "import hpc_otp_ssh.otp as m; print('import ok, _DataBlob =', m._DataBlob)"
+          python -c "
+          import hpc_otp_ssh.otp as m
+          try:
+              m._dpapi(b'x', protect=True)
+          except RuntimeError as exc:
+              print('清晰报错:', exc)
+          else:
+              raise SystemExit('应该报错')
+          "
