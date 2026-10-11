@@ -24,9 +24,14 @@ scripts or LLM agents. Windows only — credential storage uses DPAPI.
 ## 安装
 
 ```bash
+git clone https://github.com/ErwinS2/hpc-otp-ssh.git
+cd hpc-otp-ssh
+
 pip install -e .            # 源码目录内安装（推荐，便于改代码）
 pip install -e ".[qr]"      # 需要「从二维码截图导入密钥」时
 ```
+
+尚未发布到 PyPI，因此**不能**用 `pip install hpc-otp-ssh` 安装，请用上面的源码方式。
 
 安装后获得两个命令：`hpc-otp`（管理密钥与凭据）、`hpc-ssh`（连接集群）。
 
