@@ -119,7 +119,7 @@ hpc-ssh run 'sinfo -o %P,%a,%l,%D,%t'
 | `check` | 健康检查：认证并打印 `whoami`/`hostname`/`sinfo` |
 | `run [--json] [--timeout N] CMD` | 在登录节点执行命令 |
 | `submit SCRIPT [--remote-dir ~/jobs]` | 上传脚本并 `sbatch`，自动把 CRLF 转成 LF |
-| `put LOCAL REMOTE` / `get REMOTE LOCAL` | 传文件，建议配 `--host data` |
+| `put LOCAL REMOTE` / `get REMOTE LOCAL` | 传文件或整个目录（递归，等同 `scp -r`），建议配 `--host data` |
 | `shell` | 交互式 shell（会阻塞等人输入，脚本与 agent 不要用） |
 
 全局参数（放在子命令前后都可以）：`--user`、`--host login|data`、`--ask-password`、

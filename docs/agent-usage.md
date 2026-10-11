@@ -84,8 +84,8 @@ result = json.loads(p.stdout)          # 注意：退出码看 p.returncode，�
 |---|---|---|
 | `hpc-ssh check --yes` | 探活：认证 + `whoami`/`hostname`/`sinfo` | 会话开始时的健康检查 |
 | `hpc-ssh submit <本地脚本> --remote-dir ~/jobs` | 上传并 `sbatch` | 成功时 stdout 含 `Submitted batch job <id>` |
-| `hpc-ssh put <本地> <远端> --host data` | 上传文件 | 首次需 `--yes`（数据节点是另一台主机） |
-| `hpc-ssh get <远端> <本地> --host data` | 下载文件 | 同上 |
+| `hpc-ssh put <本地> <远端> --host data` | 上传文件**或目录**（递归，等同 `scp -r`，自动跳过 `__pycache__`/`.git`） | 首次需 `--yes`（数据节点是另一台主机） |
+| `hpc-ssh get <远端> <本地> --host data` | 下载文件或目录 | 同上 |
 | `hpc-ssh shell` | 交互式 shell | **agent 不要用**（会阻塞等待人工输入） |
 | `hpc-otp code --quiet` | 只输出 6 位动态码 | 一般不需要 agent 调用，`hpc-ssh` 内部已自动处理 |
 

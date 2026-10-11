@@ -297,14 +297,89 @@ def _expand_remote(sftp, path: str) -> str:
     return path
 
 
+# 递归传输时跳过的目录（本地产物，传上去没意义还占空间）
+SKIP_DIRS = {"__pycache__", ".git", ".pytest_cache", ".venv", "venv", ".idea", ".vscode"}
+SKIP_SUFFIXES = (".pyc", ".pyo")
+
+
+def _mkdir_p(sftp, path: str) -> None:
+    """在远端逐级建目录（SFTP 协议没有 mkdir -p，已存在则忽略）。"""
+    path = path.replace("\\", "/")
+    absolute = path.startswith("/")
+    cur = "/" if absolute else ""
+    for part in [p for p in path.split("/") if p]:
+        if cur in ("", "/"):
+            cur = f"/{part}" if absolute else part
+        else:
+            cur = f"{cur}/{part}"
+        try:
+            sftp.stat(cur)
+        except OSError:
+            try:
+                sftp.mkdir(cur)
+            except OSError:
+                pass
+
+
+def _put_tree(sftp, local_dir: Path, remote_dir: str) -> tuple[int, int]:
+    """递归上传目录，返回 (文件数, 总字节数)。"""
+    files = total = 0
+    _mkdir_p(sftp, remote_dir)
+    for root, dirs, names in os.walk(local_dir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        rel = Path(root).relative_to(local_dir)
+        target = remote_dir if str(rel) == "." else f"{remote_dir}/{rel.as_posix()}"
+        _mkdir_p(sftp, target)
+        for name in names:
+            if name.endswith(SKIP_SUFFIXES):
+                continue
+            src = Path(root) / name
+            sftp.put(str(src), f"{target}/{name}")
+            files += 1
+            total += src.stat().st_size
+    return files, total
+
+
+def _get_tree(sftp, remote_dir: str, local_dir: Path) -> tuple[int, int]:
+    """递归下载目录，返回 (文件数, 总字节数)。"""
+    import stat as stat_mod
+
+    files = total = 0
+    local_dir.mkdir(parents=True, exist_ok=True)
+    for entry in sftp.listdir_attr(remote_dir):
+        rpath = f"{remote_dir}/{entry.filename}"
+        lpath = local_dir / entry.filename
+        if stat_mod.S_ISDIR(entry.st_mode):
+            sub_files, sub_bytes = _get_tree(sftp, rpath, lpath)
+            files += sub_files
+            total += sub_bytes
+        else:
+            sftp.get(rpath, str(lpath))
+            files += 1
+            total += lpath.stat().st_size
+    return files, total
+
+
 def cmd_put(args) -> int:
     transport, _u, _h = connect(args)
     try:
         sftp = _sftp(transport)
         local, remote = Path(args.local), args.remote
+        if not local.exists():
+            die(f"本地不存在：{local}")
+
+        if local.is_dir():
+            # 语义与 scp -r 一致：目标以 / 结尾表示"放进这个目录里"
+            base = _expand_remote(sftp, remote)
+            target = f"{base.rstrip('/')}/{local.name}" if remote.endswith("/") else base
+            files, total = _put_tree(sftp, local, target)
+            print(f"已上传目录 {local} -> {target}（{files} 个文件，{total} 字节）")
+            return 0
+
         if remote.endswith("/"):
             remote = remote + local.name
         remote = _expand_remote(sftp, remote)
+        _mkdir_p(sftp, str(Path(remote).parent).replace("\\", "/"))
         sftp.put(str(local), remote)
         size = sftp.stat(remote).st_size
         print(f"已上传 {local} -> {remote}（{size} 字节）")
@@ -317,10 +392,24 @@ def cmd_get(args) -> int:
     transport, _u, _h = connect(args)
     try:
         sftp = _sftp(transport)
+        source = _expand_remote(sftp, args.remote)
         target = Path(args.local)
+        try:
+            attrs = sftp.stat(source)
+        except OSError:
+            die(f"远端不存在：{args.remote}")
+
+        import stat as stat_mod
+        if stat_mod.S_ISDIR(attrs.st_mode):
+            # 与 scp -r 一致：目标已存在且是目录时，在其下建同名子目录
+            dest = (target / Path(source).name) if (target.exists() and target.is_dir()) else target
+            files, total = _get_tree(sftp, source, dest)
+            print(f"已下载目录 {args.remote} -> {dest}（{files} 个文件，{total} 字节）")
+            return 0
+
         if target.is_dir():
             target = target / Path(args.remote).name
-        sftp.get(_expand_remote(sftp, args.remote), str(target))
+        sftp.get(source, str(target))
         print(f"已下载 {args.remote} -> {target}（{target.stat().st_size} 字节）")
         return 0
     finally:

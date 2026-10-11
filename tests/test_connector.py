@@ -7,8 +7,11 @@ import argparse
 import importlib
 import io
 import json
+import stat as stat_mod
 import sys
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -249,6 +252,153 @@ def test_env_var_overrides_cluster_hosts(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(module)
+
+
+# --------------------------------------------------------------------------
+# 目录递归传输（scp -r 语义）：上传分析脚本目录时必需
+# --------------------------------------------------------------------------
+class FakeSFTPTree:
+    """内存版 SFTP，用来验证 _mkdir_p / _put_tree / _get_tree 与 put/get 的目录语义。"""
+
+    def __init__(self, dirs=(), files=None):
+        self.dirs = set(dirs)
+        self.files = dict(files or {})
+
+    def normalize(self, _path):
+        return "/home/u"
+
+    def stat(self, path):
+        if path in self.dirs:
+            return SimpleNamespace(st_mode=stat_mod.S_IFDIR)
+        if path in self.files:
+            return SimpleNamespace(st_mode=stat_mod.S_IFREG, st_size=len(self.files[path]))
+        raise IOError(f"no such file: {path}")
+
+    def mkdir(self, path):
+        if path in self.dirs:
+            raise IOError("already exists")
+        self.dirs.add(path)
+
+    def put(self, local, remote):
+        self.files[remote] = Path(local).read_bytes()
+
+    def get(self, remote, local):
+        target = Path(local)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.files[remote])
+
+    def listdir_attr(self, path):
+        prefix = path.rstrip("/") + "/"
+        seen, out = set(), []
+        for collection, mode in ((self.dirs, stat_mod.S_IFDIR),
+                                 (self.files, stat_mod.S_IFREG)):
+            for item in collection:
+                if not item.startswith(prefix):
+                    continue
+                name = item[len(prefix):]
+                if not name or "/" in name or name in seen:
+                    continue
+                seen.add(name)
+                out.append(SimpleNamespace(filename=name, st_mode=mode))
+        return out
+
+
+def test_mkdir_p_creates_each_level():
+    sftp = FakeSFTPTree()
+    ssh._mkdir_p(sftp, "/home/u/a/b/c")
+    assert sftp.dirs == {"/home", "/home/u", "/home/u/a", "/home/u/a/b", "/home/u/a/b/c"}
+
+
+def test_mkdir_p_ignores_existing_levels():
+    sftp = FakeSFTPTree(dirs={"/home", "/home/u"})
+    ssh._mkdir_p(sftp, "/home/u/x/y")
+    assert {"/home/u/x", "/home/u/x/y"} <= sftp.dirs
+
+
+def test_put_tree_uploads_nested_and_skips_junk(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.py").write_bytes(b"print(1)")
+    (tmp_path / "sub" / "b.sh").write_bytes(b"#!/bin/bash\n")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"junk")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_bytes(b"junk")
+
+    sftp = FakeSFTPTree()
+    files, total = ssh._put_tree(sftp, tmp_path, "/home/u/dst")
+
+    assert files == 2                                   # __pycache__ 与 .git 被跳过
+    assert set(sftp.files) == {"/home/u/dst/a.py", "/home/u/dst/sub/b.sh"}
+    assert total == len(b"print(1)") + len(b"#!/bin/bash\n")
+    assert "/home/u/dst/sub" in sftp.dirs
+
+
+def test_get_tree_downloads_nested(tmp_path):
+    sftp = FakeSFTPTree(dirs={"/r", "/r/sub"},
+                        files={"/r/x.csv": b"a,b\n", "/r/sub/y.py": b"print(1)\n"})
+    files, total = ssh._get_tree(sftp, "/r", tmp_path / "out")
+
+    assert files == 2
+    assert total == len(b"a,b\n") + len(b"print(1)\n")
+    assert (tmp_path / "out" / "x.csv").read_bytes() == b"a,b\n"
+    assert (tmp_path / "out" / "sub" / "y.py").read_bytes() == b"print(1)\n"
+
+
+def test_cmd_put_directory_drops_into_target(monkeypatch, tmp_path, capsys):
+    """put 目录到以 / 结尾的目标 -> 在目标下建同名子目录（与 scp -r 一致）。"""
+    src = tmp_path / "8_analysis"
+    src.mkdir()
+    (src / "a.py").write_text("x")
+    sftp = FakeSFTPTree()
+    monkeypatch.setattr(ssh, "connect", lambda _a: (FakeTransport(FakeChannel()), "u", "h"))
+    monkeypatch.setattr(ssh, "_sftp", lambda _t: sftp)
+
+    args = make_args(local=str(src), remote="~/vns/AB_run/")
+    assert ssh.cmd_put(args) == 0
+
+    assert "/home/u/vns/AB_run/8_analysis/a.py" in sftp.files
+    assert "已上传目录" in capsys.readouterr().out
+
+
+def test_cmd_put_single_file_creates_parent_dir(monkeypatch, tmp_path, capsys):
+    src = tmp_path / "job.sh"
+    src.write_bytes(b"#!/bin/bash\n")     # 用字节写入，避免 Windows 把 \n 变成 \r\n
+    sftp = FakeSFTPTree()
+    monkeypatch.setattr(ssh, "connect", lambda _a: (FakeTransport(FakeChannel()), "u", "h"))
+    monkeypatch.setattr(ssh, "_sftp", lambda _t: sftp)
+
+    args = make_args(local=str(src), remote="~/jobs/job.sh")
+    assert ssh.cmd_put(args) == 0
+
+    assert sftp.files["/home/u/jobs/job.sh"] == b"#!/bin/bash\n"
+    assert "/home/u/jobs" in sftp.dirs            # 远端父目录自动创建
+
+
+def test_cmd_put_missing_local_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(ssh, "connect", lambda _a: (FakeTransport(FakeChannel()), "u", "h"))
+    monkeypatch.setattr(ssh, "_sftp", lambda _t: FakeSFTPTree())
+    with pytest.raises(SystemExit):
+        ssh.cmd_put(make_args(local=str(tmp_path / "nope"), remote="~/x"))
+
+
+def test_cmd_get_directory_creates_named_subdir(monkeypatch, tmp_path, capsys):
+    sftp = FakeSFTPTree(dirs={"/home/u/8_kslice"},
+                        files={"/home/u/8_kslice/wannier90-kslice.dat": b"1 2 3\n"})
+    monkeypatch.setattr(ssh, "connect", lambda _a: (FakeTransport(FakeChannel()), "u", "h"))
+    monkeypatch.setattr(ssh, "_sftp", lambda _t: sftp)
+
+    args = make_args(remote="~/8_kslice", local=str(tmp_path))
+    assert ssh.cmd_get(args) == 0
+
+    assert (tmp_path / "8_kslice" / "wannier90-kslice.dat").read_bytes() == b"1 2 3\n"
+    assert "已下载目录" in capsys.readouterr().out
+
+
+def test_cmd_get_missing_remote_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(ssh, "connect", lambda _a: (FakeTransport(FakeChannel()), "u", "h"))
+    monkeypatch.setattr(ssh, "_sftp", lambda _t: FakeSFTPTree())
+    with pytest.raises(SystemExit):
+        ssh.cmd_get(make_args(remote="~/nope", local=str(tmp_path)))
 
 
 # --------------------------------------------------------------------------
